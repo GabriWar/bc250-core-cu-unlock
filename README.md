@@ -27,7 +27,8 @@ sudo ./bc250-8core-unlock.sh install    # persist it: installs + enables the sys
 ```
 
 `install` drops the script at `/usr/local/bin/bc250-8core-unlock` and enables
-`bc250-8core-unlock.service`, which applies the unlock early at every boot.
+`bc250-8core-unlock.service`, a late-boot oneshot that sets the mask and nothing else.
+It never reboots — you get the cores on your next reboot.
 
 Remove it with `sudo ./bc250-8core-unlock.sh uninstall`.
 
@@ -66,9 +67,15 @@ platform re-enumerates — hence the reboot.
 The script sets `/sys/kernel/reboot/mode=warm` before rebooting to match what the BIOS
 driver does (`EfiResetWarm`).
 
-This is why the systemd unit exists: after a cold boot it re-applies the unlock and warm
-reboots **once** (~15 s). Warm reboots are a no-op. The unit is capped at 2 consecutive
-attempts, so it can never end up in a reboot loop.
+The optional systemd unit re-applies the mask after a cold boot. **It never reboots for
+you** — the cores appear on your next reboot, whenever you choose to do one.
+
+> ⚠️ **An earlier version of this unit rebooted automatically and bootlooped a real
+> board.** The reset it triggered did not preserve the mask, so every boot read `0x77`,
+> re-applied and reset again. The attempt counter meant to cap that never persisted
+> (`/var` is not reliably writable that early), and `systemctl reboot` cannot even work
+> before D-Bus is up. If you installed that version, run `uninstall`. The unit no longer
+> reboots under any circumstance.
 
 ---
 

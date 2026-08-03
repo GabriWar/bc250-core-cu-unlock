@@ -44,10 +44,6 @@ STOCK_MASK=0x77
 UNLOCKED_MASK=0xff
 
 REBOOT_MODE=/sys/kernel/reboot/mode
-STATE_DIR=/var/lib/bc250-8core-unlock
-ATTEMPT_FILE=$STATE_DIR/attempts
-MAX_ATTEMPTS=2                # hard stop against a reboot loop
-
 BIN_PATH=/usr/local/bin/bc250-8core-unlock
 UNIT_NAME=bc250-8core-unlock.service
 UNIT_PATH=/etc/systemd/system/$UNIT_NAME
@@ -123,9 +119,6 @@ set_warm_reboot() {
     fi
 }
 
-get_attempts() { cat "$ATTEMPT_FILE" 2>/dev/null || echo 0; }
-set_attempts() { mkdir -p "$STATE_DIR" 2>/dev/null && echo "$1" > "$ATTEMPT_FILE" 2>/dev/null; }
-
 # ---------------------------------------------------------------------------
 # commands
 # ---------------------------------------------------------------------------
@@ -189,15 +182,30 @@ cmd_apply() {
     fi
 }
 
+# Boot-time path used by the systemd unit.
+#
+# This sets the mask and NOTHING ELSE. It deliberately does not reboot.
+#
+# An earlier version rebooted here so the firmware would re-enumerate in the
+# same session. That bootlooped a real board: the reset it triggered did not
+# preserve the mask, so every boot read 0x77, re-applied, and reset again. The
+# attempt counter meant to cap that never persisted (/var is not reliably
+# writable that early, and the reset was too abrupt to flush), and
+# `systemctl reboot` cannot even work before D-Bus is up:
+#
+#     systemctl[533]: Failed to connect to system scope bus via local transport
+#
+# So: no automatic reboots, ever. The mask takes effect on your NEXT reboot,
+# whenever you choose to do one.
 cmd_boot() {
     need_tools
-    local saved mask attempts resp after
+    local saved mask resp after
     saved=$(save_index)
     mask=$(read_mask)
 
     if [ "$mask" -eq $((UNLOCKED_MASK)) ]; then
-        restore_index "$saved"; set_attempts 0
-        echo "already unlocked ($(describe "$mask")) -- continuing boot"; return 0
+        restore_index "$saved"
+        echo "already unlocked ($(describe "$mask")) -- nothing to do"; return 0
     fi
     if [ "$mask" -ne $((STOCK_MASK)) ]; then
         restore_index "$saved"
@@ -205,53 +213,38 @@ cmd_boot() {
         return 0
     fi
 
-    attempts=$(get_attempts)
-    if [ "$attempts" -ge "$MAX_ATTEMPTS" ]; then
-        restore_index "$saved"
-        echo "giving up after $attempts attempts -- mask is not surviving reset. Booting with 6 cores." >&2
-        return 0
-    fi
-
-    set_attempts $((attempts + 1))
-    echo "mask is stock -- unlocking (attempt $((attempts + 1))/$MAX_ATTEMPTS)"
-
     resp=$(send_unlock)
     after=$(read_mask)
     restore_index "$saved"
 
     if [ "$after" -ne $((UNLOCKED_MASK)) ]; then
-        echo "unlock failed (SMU response $(printf '0x%x' "$resp")) -- booting with 6 cores" >&2
+        echo "unlock failed (SMU response $(printf '0x%x' "$resp")) -- staying at 6 cores" >&2
         return 0
     fi
-
-    echo "unlocked -- warm rebooting so firmware enumerates all 8 cores"
-    set_warm_reboot
-    exec systemctl reboot
+    echo "mask set to 0xFF -- all 8 cores will appear on your next reboot"
 }
 
 cmd_install() {
     need_root
     install -Dm755 "$0" "$BIN_PATH"
 
+    # Ordinary late-boot unit with normal dependencies. It only writes an SMU
+    # register and never reboots, so there is no reason to run it early -- and
+    # running early is exactly what broke the previous version.
     cat > "$UNIT_PATH" <<EOF
 [Unit]
 Description=BC-250 8-core unlock (SMU msg 0x98)
 Documentation=https://github.com/GabriWar/bc250-core-cu-unlock
-DefaultDependencies=no
-After=local-fs.target
-Before=sysinit.target
-Conflicts=shutdown.target
+After=multi-user.target
 ConditionPathExists=/sys/bus/pci/devices/0000:$DEV/config
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=$BIN_PATH boot
-StandardOutput=journal+console
-StandardError=journal+console
 
 [Install]
-WantedBy=sysinit.target
+WantedBy=multi-user.target
 EOF
 
     systemctl daemon-reload
@@ -260,16 +253,15 @@ EOF
     echo "  $BIN_PATH"
     echo "  $UNIT_PATH  (enabled)"
     echo
-    echo "On the next COLD boot the unit unlocks the cores and warm-reboots once,"
-    echo "costing about 15 s. Warm reboots keep the mask, so it is a no-op there."
-    echo "Capped at $MAX_ATTEMPTS attempts so it can never loop."
+    echo "This unit NEVER reboots. After a cold boot it sets the mask, and the"
+    echo "cores appear on your next reboot -- whenever you choose to do one."
 }
 
 cmd_uninstall() {
     need_root
     systemctl disable --now "$UNIT_NAME" 2>/dev/null
     rm -f "$UNIT_PATH" "$BIN_PATH"
-    rm -rf "$STATE_DIR"
+    rm -rf /var/lib/bc250-8core-unlock      # state dir from older versions
     systemctl daemon-reload
     echo "removed. cores stay unlocked until the next cold boot."
 }
