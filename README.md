@@ -1,6 +1,6 @@
-# bc250-8core-unlock
+# bc250-core-cu-unlock
 
-Enable all **8 CPU cores** on the AMD BC-250 from Linux — no BIOS flash, no kernel patch.
+Unlock the hidden silicon on the AMD BC-250: **8 CPU cores** (from 6) and **40 GPU compute units** (from 24).
 
 The BC-250 ships as a 6-core part. The two dormant cores are **not fused off**: they are
 masked by a writable SMU register. This flips the mask with a single SMU mailbox command
@@ -18,8 +18,8 @@ Measured on a stock-clocked BC-250: **7-zip 53,610 → 68,039 MIPS (+26.9%)**.
 ## Quick start
 
 ```bash
-git clone https://github.com/gabriwar/bc250-8core-unlock
-cd bc250-8core-unlock
+git clone https://github.com/GabriWar/bc250-core-cu-unlock
+cd bc250-core-cu-unlock
 
 sudo ./bc250-8core-unlock.sh status     # show the current core mask
 sudo ./bc250-8core-unlock.sh apply      # unlock now (then: sudo reboot)
@@ -121,11 +121,50 @@ off for market segmentation, nothing more.
   `1: 15Mhz` instead of `1500Mhz`), and `gpu_busy_percent` may come back empty. The GPU
   still clocks correctly according to your governor curve — this is a reporting bug only.
   Reported by the BC-250 Telegram community and reproduced here.
-- **Thermals shift.** Two more cores share the same SoC power/thermal envelope as the GPU.
-  A stock-clocked 16-thread load hit **82.4 °C** Tctl. If you run a tuned CPU/GPU curve,
-  re-validate it after unlocking.
+- **Your existing overclock is no longer valid.** See below — this is the big one.
 
 ---
+
+## ⚠️ Your overclock is no longer valid
+
+This is the part people will get wrong. **Two extra cores change the electrical and
+thermal behaviour of the whole SoC.** A curve tuned at 6 cores is not a curve that holds
+at 8, and the failure mode is not a clean error — it is intermittent instability that
+looks like a bad game, a bad driver, or a bad kernel.
+
+What actually changes:
+
+- **Load-line droop gets worse.** Eight cores pulling current sag the rail further than
+  six at the same requested voltage. A voltage that was marginal-but-stable at 6 cores can
+  land below the silicon's floor at 8 under an all-core transient. Undervolts are the
+  first thing to break.
+- **Thermals rise.** More cores in the same package. Measured here: **82.4 °C Tctl at
+  stock clocks** under a 16-thread load — before any OC.
+- **The shared budget shifts.** CPU and GPU draw from one SoC power/thermal envelope. Two
+  more cores take a bigger slice, so the GPU has less headroom than it did. If you also
+  ran the [CU unlock](#gpu-compute-units-40-cu), both ends are now competing harder.
+- **Your sweet spot moves.** Peak-throughput frequency, the efficiency knee and the
+  point where extra clock stops buying anything are all functions of the thermal envelope,
+  and that envelope just changed.
+
+So after unlocking, redo the work:
+
+```bash
+./test-cores.sh 60                 # per-core correctness first, all 8 cores
+```
+
+Then, in order:
+
+1. **Re-run your CPU benchmark** and find the new plateau. Frequencies that paid off at
+   6 cores may be past the knee at 8.
+2. **Re-check droop** — measure actual voltage under an all-core load, not at idle, and
+   compare against what you requested. Widen the margin where it sagged.
+3. **Re-cliff the undervolt** at 8 cores. Do not carry the old curve over.
+4. **Re-validate thermals** under sustained load, not a short burst, with the CPU and GPU
+   loaded *together* — that co-load case is where the shared envelope actually bites.
+5. **Re-tune the CPU/GPU split** if you were balancing them.
+
+Treat the old numbers as a starting hypothesis, not a configuration.
 
 ## Safety
 
@@ -142,6 +181,29 @@ window as small as possible, but the race is not formally eliminated.
 Requires `pciutils` (`setpci`) and root.
 
 ---
+
+## GPU compute units (40 CU)
+
+The BC-250 also ships with 24 of its 40 RDNA2 compute units active. That is a **separate
+mechanism** — controlled by `amdgpu`, not the SMU — and the unlock is
+**[duggasco's](https://github.com/duggasco/bc250-40cu-unlock)** work: the kernel patch,
+the dual-register analysis and the whitepaper are all theirs.
+
+`bc250-40cu-unlock.sh` in this repo does not reimplement any of it. It only manages the
+persistent config for a kernel already built with that patch:
+
+```bash
+sudo ./bc250-40cu-unlock.sh status     # active CU count, patch presence, persistence
+sudo ./bc250-40cu-unlock.sh enable     # persist bc250_cc_write_mode=3, rebuild initramfs
+sudo ./bc250-40cu-unlock.sh disable    # undo
+```
+
+It deliberately does **not** poke the GPU registers at runtime via `umr` or debugfs. That
+path exists but it races the live driver and is unverified by this project — the
+kernel-patch route is the one people actually run.
+
+Running both unlocks together means the CPU and GPU are competing for the same SoC budget
+much harder than stock. See the overclock warning above.
 
 ## Making it permanent (BIOS route)
 

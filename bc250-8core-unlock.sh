@@ -236,7 +236,7 @@ cmd_install() {
     cat > "$UNIT_PATH" <<EOF
 [Unit]
 Description=BC-250 8-core unlock (SMU msg 0x98)
-Documentation=https://github.com/gabriwar/bc250-8core-unlock
+Documentation=https://github.com/GabriWar/bc250-core-cu-unlock
 DefaultDependencies=no
 After=local-fs.target
 Before=sysinit.target
@@ -285,6 +285,11 @@ bc250-8core-unlock -- enable all 8 CPU cores on the AMD BC-250
   uninstall   remove both
 
 Unlock is reverted by any cold boot (power removed). Nothing is written to flash.
+
+For the GPU compute-unit unlock (24 -> 40 CU), see ./bc250-40cu-unlock.sh
+
+WARNING: this changes the shared SoC power/thermal envelope. Any existing
+overclock or undervolt curve must be re-validated afterwards -- see README.
 EOF
 }
 
