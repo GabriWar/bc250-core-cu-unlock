@@ -1,0 +1,2 @@
+*.ROM  -diff -text
+*.efi  -diff -text

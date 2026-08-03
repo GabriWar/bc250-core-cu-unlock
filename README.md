@@ -245,7 +245,22 @@ The tables themselves are **[mendesrr's](https://github.com/mendesrr/bc250-acpi-
 This script does not vendor or modify them — it fetches them from that repo, backs up
 whatever you had, and rebuilds the initramfs.
 
-## Making it permanent (BIOS route)
+## Ready-to-flash BIOS (no script at all)
+
+A prebuilt BIOS is in **[`bios/`](bios/)** — P5.00_clv base, the 8-core driver ported in,
+custom boot logo. Flash it and the unlock lives in firmware; nothing runs in the OS.
+
+```
+Advanced  →  Advanced CPU Settings  →  Unlock CPU Cores  →  Enabled / Disabled
+```
+
+Defaults to **Disabled**, so a CMOS clear always gets you back to a bootable 6-core
+machine. Verified on real hardware — see [bios/README.md](bios/README.md) for flashing and
+recovery.
+
+⚠️ It writes the boot block. **Do not flash without a CH341A programmer on hand.**
+
+## Building it yourself (BIOS route)
 
 The systemd unit costs one extra reboot per cold boot. To avoid that entirely, the
 `Bc250CoreUnlockDxe` driver from the MeiMeiDXE BIOS mod can be injected into your own BIOS
