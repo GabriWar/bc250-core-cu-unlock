@@ -205,6 +205,39 @@ kernel-patch route is the one people actually run.
 Running both unlocks together means the CPU and GPU are competing for the same SoC budget
 much harder than stock. See the overclock warning above.
 
+## ACPI tables — do this after unlocking
+
+**If you use the community ACPI fix, the 6-core tables are now wrong for your machine.**
+
+`SSDT-CST.aml` declares one processor object per *thread*. The 6-core tables stop at
+`C00B` — 12 threads. Once all 8 cores are on you have 16, so **CPUs 12–15 get no cpuidle
+states at all**: they cannot enter any C-state and sit burning power at idle. Measured on
+a real board before fixing it:
+
+```
+cpu0:  4 idle states
+cpu6:  4 idle states
+cpu12: 0 idle states   <-- no C-states
+cpu14: 0 idle states
+cpu15: 0 idle states
+```
+
+The 8-core tables extend the declarations to `C00F`, covering all 16 threads.
+
+```bash
+sudo ./bc250-acpi-fix.sh status     # threads vs declared objects, CPUs missing C-states
+sudo ./bc250-acpi-fix.sh install    # fetch 8-core SSDTs, back up existing, rebuild initramfs
+sudo ./bc250-acpi-fix.sh revert     # restore the previous tables
+```
+
+Arch/CachyOS (mkinitcpio) only. For Bazzite/SteamOS, follow the README in the source repo.
+
+The tables themselves are **[mendesrr's](https://github.com/mendesrr/bc250-acpi-fix-updated-8c)**
+8-core rebuild of the original
+[bc250-collective/bc250-acpi-fix](https://github.com/bc250-collective/bc250-acpi-fix).
+This script does not vendor or modify them — it fetches them from that repo, backs up
+whatever you had, and rebuilds the initramfs.
+
 ## Making it permanent (BIOS route)
 
 The systemd unit costs one extra reboot per cold boot. To avoid that entirely, the
@@ -222,6 +255,12 @@ SPI programmer (CH341A + SOIC-8 clip) and a verified backup of your current chip
 - **[Forbidden-Darkness](https://github.com/Forbidden-Darkness/AMD-BC-250-UEFI-v2.2-Firmware-Menu-Script)**
   — author of the MeiMeiDXE-T-v2 BIOS mod containing `Bc250CoreUnlockDxe`, from which the
   SMU sequence used here was reverse engineered
+- **[mendesrr](https://github.com/mendesrr/bc250-acpi-fix-updated-8c)** — the 8-core ACPI
+  SSDT rebuild, without which CPUs 12-15 have no C-states after unlocking
+- **[duggasco](https://github.com/duggasco/bc250-40cu-unlock)** — the entire 40 CU GPU
+  unlock: kernel patch, dual-register analysis and whitepaper
+- **[bc250-collective](https://github.com/bc250-collective/bc250-acpi-fix)** — the original
+  ACPI fix the 8-core tables are built on
 
 The mechanism was recovered by module-diffing the modded BIOS against stock, isolating the
 `Bc250CoreUnlockDxe` DXE driver (GUID `2F3D426D-6A54-4A6B-82D0-1207CC5B6D92`), and
