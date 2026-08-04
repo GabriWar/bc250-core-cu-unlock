@@ -124,10 +124,14 @@ off for market segmentation, nothing more.
 
 ## Known issues
 
-- **GPU frequency monitoring breaks.** `pp_dpm_sclk` starts reporting nonsense (e.g.
-  `1: 15Mhz` instead of `1500Mhz`), and `gpu_busy_percent` may come back empty. The GPU
-  still clocks correctly according to your governor curve — this is a reporting bug only.
-  Reported by the BC-250 Telegram community and reproduced here.
+- **GPU frequency monitoring breaks — but this is now FIXABLE.** `pp_dpm_sclk` starts
+  reporting nonsense (e.g. `1: 15Mhz` instead of `1500Mhz`). The GPU still clocks
+  correctly; it's a reporting bug. The cause: the SMU metrics table is a fixed 116 bytes,
+  and the expanded 8-core per-core arrays consume the slot `GfxclkFrequency` used to
+  occupy — the driver reads a residency counter instead of a clock. Fixed by
+  **[higorprado](https://github.com/higorprado/bc250-8core-telemetry-report)**'s patch,
+  included in [`kernel/`](kernel/). The community consensus that this "can't be fixed"
+  is out of date.
 - **Your existing overclock is no longer valid.** See below — this is the big one.
 
 ---
@@ -269,6 +273,12 @@ SPI programmer (CH341A + SOIC-8 clip) and a verified backup of your current chip
 
 ---
 
+## Kernel patches
+
+[`kernel/`](kernel/) carries two `amdgpu` patches worth having once 8 cores are on — the
+GPU-clock telemetry fix (working) and a ROCm VM-flush candidate (unconfirmed). Building
+just the `amdgpu` module takes ~95 s on an unlocked BC-250.
+
 ## Credits
 
 - **[gabriwar](https://github.com/gabriwar)** — reverse engineering of the mechanism and this tool
@@ -283,6 +293,9 @@ SPI programmer (CH341A + SOIC-8 clip) and a verified backup of your current chip
   unlock: kernel patch, dual-register analysis and whitepaper
 - **[bc250-collective](https://github.com/bc250-collective/bc250-acpi-fix)** — the original
   ACPI fix the 8-core tables are built on
+- **[higorprado](https://github.com/higorprado/bc250-8core-telemetry-report)** — mapped the
+  8-core SMU metrics layout by differential core-offline probing and fixed the GPU-clock
+  readout that unlocking the cores breaks
 
 The mechanism was recovered by module-diffing the modded BIOS against stock, isolating the
 `Bc250CoreUnlockDxe` DXE driver (GUID `2F3D426D-6A54-4A6B-82D0-1207CC5B6D92`), and

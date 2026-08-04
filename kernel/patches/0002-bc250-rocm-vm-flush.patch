@@ -1,0 +1,21 @@
+BC-250: don't route VM/TLB flushes through KIQ
+
+On the BC-250 (gfx1013 / cyan skillfish) the GRBM/CP register range
+0x2000-0x2FFF reads back 0xFFFFFFFF -- those IP blocks are disabled on the
+die. KIQ lives there, so any VM/TLB flush routed through it never completes:
+
+    amdgpu: Timeout waiting for VM flush hub: 0!
+    amdgpu: GPU mode1 reset ... VRAM is lost due to GPU reset!
+    amdgpu: ring sdma1 test failed (-110)
+
+This makes any ROCm/PyTorch workload die on its first device allocation.
+Bare hipMalloc+hipMemcpy still works, so the flush path is only reached
+under certain allocation patterns.
+
+STATUS: candidate fix, NOT yet confirmed to resolve the PyTorch hang.
+
+--- a/drivers/gpu/drm/amd/amdgpu/gmc_v10_0.c
++++ b/drivers/gpu/drm/amd/amdgpu/gmc_v10_0.c
+@@
+-	adev->gmc.flush_pasid_uses_kiq = !amdgpu_emu_mode;
++	adev->gmc.flush_pasid_uses_kiq = false; /* BC-250 fix: KIQ dead */
