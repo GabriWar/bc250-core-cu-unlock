@@ -4,8 +4,10 @@
 #
 # The BC-250 ships as a 6-core part, but the two dormant cores are NOT fused
 # off: they are masked by a writable SMU register. SMN 0x0115A870 is a core
-# enable bitmask -- 0x77 from the factory (cores 3 and 7 masked), 0xFF for all
-# eight.
+# enable bitmask -- 0xFF for all eight. From the factory one core per 4-core
+# cluster is masked; which one varies by board: 0x77 (cores 3 and 7) is the
+# common case, 0x7D (cores 1 and 7) and 0xD7 (cores 3 and 5) have also been
+# seen.
 #
 # The mask is flipped with an SMU mailbox command, message 0x98, reached over
 # SMN through the PCI config index/data pair 0xB8/0xBC on device 00:00.0:
@@ -18,7 +20,7 @@
 #
 # CPU topology is fixed by firmware at reset, so the new cores do not show up
 # until the platform re-enumerates. A WARM reset preserves the mask; a cold
-# boot (power actually removed) resets it to 0x77 -- which is also the built-in
+# boot (power actually removed) resets it to the factory mask -- the built-in
 # escape hatch if anything misbehaves.
 #
 # Derived by reverse-engineering Bc250CoreUnlockDxe out of the MeiMeiDXE-T-v2
@@ -40,8 +42,9 @@ ARG1_REG=03B10A8C             # SMU mailbox arg1
 MSG_REG=03B10A20              # SMU mailbox message id
 MSG_UNLOCK=98                 # register-write backdoor
 
-STOCK_MASK=0x77
 UNLOCKED_MASK=0xff
+STATE_DIR=/var/lib/bc250-8core-unlock
+ORIG_MASK_FILE=$STATE_DIR/factory-mask   # read by test-cores.sh to label new cores
 
 REBOOT_MODE=/sys/kernel/reboot/mode
 BIN_PATH=/usr/local/bin/bc250-8core-unlock
@@ -81,6 +84,25 @@ hex2dec() { printf '%d' "0x${1#0x}" 2>/dev/null || echo 0; }
 read_mask() {                                  # -> decimal 0..255
     local v; v=$(smn_read "$MASK_REG")
     echo $(( $(hex2dec "$v") & 0xff ))
+}
+
+# A factory 6-core mask has exactly one core disabled in each 4-core cluster
+# (bits 0-3 and bits 4-7), and nothing above bit 7. Anything else -- fewer
+# cores, a lopsided pattern, stray upper bits, or a misread -- is refused.
+is_factory_mask() {                            # $1 = decimal mask
+    local m=$1 lo hi
+    (( (m & ~0xff) == 0 )) || return 1
+    lo=$(( m & 0xf )); hi=$(( (m >> 4) & 0xf ))
+    case $lo in 7|11|13|14) ;; *) return 1 ;; esac
+    case $hi in 7|11|13|14) ;; *) return 1 ;; esac
+}
+
+# Remember the factory mask so test-cores.sh can tell which cores are new.
+# Best effort only: a failure here must never block or undo the unlock.
+save_factory_mask() {                          # $1 = decimal mask
+    mkdir -p "$STATE_DIR" 2>/dev/null \
+        && printf '0x%02X\n' "$1" > "$ORIG_MASK_FILE" 2>/dev/null \
+        || echo "warning: could not record factory mask in $ORIG_MASK_FILE" >&2
 }
 
 describe() {                                   # $1 = decimal mask
@@ -133,8 +155,12 @@ cmd_status() {
     echo "SMN 0x$MASK_REG = $(describe "$mask")"
     case $mask in
         $((UNLOCKED_MASK))) echo "state: UNLOCKED (all 8 cores)" ;;
-        $((STOCK_MASK)))    echo "state: STOCK (6 cores) -- run 'apply' to unlock" ;;
-        *)                  echo "state: UNKNOWN mask" ;;
+        *)
+            if is_factory_mask "$mask"; then
+                echo "state: STOCK (6 cores) -- run 'apply' to unlock"
+            else
+                echo "state: UNKNOWN mask -- 'apply' will refuse it"
+            fi ;;
     esac
 
     cores=$(grep '^core id' /proc/cpuinfo 2>/dev/null | sort -u | wc -l)
@@ -154,9 +180,9 @@ cmd_apply() {
     if [ "$before" -eq $((UNLOCKED_MASK)) ]; then
         restore_index "$saved"; echo "already unlocked, nothing to do"; return 0
     fi
-    if [ "$before" -ne $((STOCK_MASK)) ]; then
+    if ! is_factory_mask "$before"; then
         restore_index "$saved"
-        die "refusing: unexpected mask $(printf '0x%02X' "$before") (expected 0x77)"
+        die "refusing: unexpected mask $(printf '0x%02X' "$before") (expected one core off per cluster, e.g. 0x77)"
     fi
 
     resp=$(send_unlock)
@@ -172,6 +198,7 @@ cmd_apply() {
 
     [ "$after" -eq $((UNLOCKED_MASK)) ] \
         || die "unlock FAILED -- mask unchanged, nothing broken"
+    save_factory_mask "$before"
 
     echo
     echo "unlocked. cores appear after a WARM reboot:  sudo reboot"
@@ -188,7 +215,7 @@ cmd_apply() {
 #
 # An earlier version rebooted here so the firmware would re-enumerate in the
 # same session. That bootlooped a real board: the reset it triggered did not
-# preserve the mask, so every boot read 0x77, re-applied, and reset again. The
+# preserve the mask, so every boot read the factory mask, re-applied, and reset again. The
 # attempt counter meant to cap that never persisted (/var is not reliably
 # writable that early, and the reset was too abrupt to flush), and
 # `systemctl reboot` cannot even work before D-Bus is up:
@@ -207,7 +234,7 @@ cmd_boot() {
         restore_index "$saved"
         echo "already unlocked ($(describe "$mask")) -- nothing to do"; return 0
     fi
-    if [ "$mask" -ne $((STOCK_MASK)) ]; then
+    if ! is_factory_mask "$mask"; then
         restore_index "$saved"
         echo "unexpected mask $(printf '0x%02X' "$mask"), not touching anything" >&2
         return 0
@@ -221,6 +248,7 @@ cmd_boot() {
         echo "unlock failed (SMU response $(printf '0x%x' "$resp")) -- staying at 6 cores" >&2
         return 0
     fi
+    save_factory_mask "$mask"
     echo "mask set to 0xFF -- all 8 cores will appear on your next reboot"
 }
 
@@ -261,7 +289,7 @@ cmd_uninstall() {
     need_root
     systemctl disable --now "$UNIT_NAME" 2>/dev/null
     rm -f "$UNIT_PATH" "$BIN_PATH"
-    rm -rf /var/lib/bc250-8core-unlock      # state dir from older versions
+    rm -rf "$STATE_DIR"                     # recorded factory mask
     systemctl daemon-reload
     echo "removed. cores stay unlocked until the next cold boot."
 }
