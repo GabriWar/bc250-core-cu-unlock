@@ -39,9 +39,14 @@ Remove it with `sudo ./bc250-8core-unlock.sh uninstall`.
 `SMN 0x0115A870` is a **core-enable bitmask** — one bit per core:
 
 ```
-0x77 = 0b0111_0111   bits 3 and 7 clear   -> 6 cores (factory)
+0x77 = 0b0111_0111   bits 3 and 7 clear   -> 6 cores (factory, most boards)
 0xFF = 0b1111_1111   all bits set         -> 8 cores
 ```
+
+The factory mask is not the same on every board. It always disables exactly one core
+per 4-core cluster, but which one varies: `0x77` (cores 3 and 7) is the common case,
+and `0x7D` (cores 1 and 7) and `0xD7` (cores 3 and 5) have also been reported. Message
+`0x98` takes no mask value, so the unlock is identical for all of them.
 
 It is written through an **SMU mailbox command, message `0x98`**, reached over SMN via the
 PCI config index/data pair `0xB8`/`0xBC` on device `00:00.0`:
@@ -182,8 +187,12 @@ Treat the old numbers as a starting hypothesis, not a configuration.
 Nothing is written to flash. The unlock lives in a volatile SMU register, so **a cold boot
 is a guaranteed escape hatch** — cut power and you are back to a stock 6-core machine.
 
-The script refuses to act on any mask other than `0x77`, verifies the result before
-rebooting, and never reboots if the SMU rejects the command.
+The script only acts on a factory-pattern mask — exactly one core disabled in each
+4-core cluster, nothing above bit 7 — and refuses anything else (fewer cores, a lopsided
+pattern, a misread). It verifies the result reads `0xFF`, and never reboots if the SMU
+rejects the command. The factory mask is recorded in
+`/var/lib/bc250-8core-unlock/factory-mask` so `test-cores.sh` can label the right cores
+as new.
 
 One real caveat: `amdgpu` drives the same `0xB8`/`0xBC` pair and the same SMU mailbox. The
 whole write sequence is issued as a *single* `setpci` invocation to keep the interleave
